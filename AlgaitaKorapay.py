@@ -885,24 +885,24 @@ def create_kora_payment(user_id, order_id, amount, title):
 def home():
     return "OK", 200
 
-
-# ========= CALLBACK PAGE =========
-@app.route("/paystack-callback", methods=["GET"])
-def paystack_callback():
-    return """
-    <html>
-    <head>
-        <title>Payment Successful</title>
-        <meta http-equiv="refresh" content="5;url=https://t.me/Aslamtv2bot">
-    </head>
-    <body style="font-family: Arial; text-align: center; padding-top: 150px; font-size: 22px;">
-        <h2>✅ Payment Successful</h2>
-        <p>An tabbatar da biyan ka.</p>
-        <p>Kashe browser ka koma telegram</p>
-        <a href="https://t.me/Algaitabot">Komawa Telegram yanzu</a>
-    </body>
-    </html>
+# ========= CALLBACK PAGE =========  
+@app.route("/korapay-callback", methods=["GET"])  
+def korapay_callback():  
+    return """  
+    <html>  
+    <head>  
+        <title>Payment Successful</title>  
+        <meta http-equiv="refresh" content="5;url=https://t.me/Aslamtv2bot">  
+    </head>  
+    <body style="font-family: Arial; text-align: center; padding-top: 150px; font-size: 22px;">  
+        <h2>✅ Payment Successful</h2>  
+        <p>An tabbatar da biyan ka.</p>  
+        <p>Kashe browser ka koma telegram</p>  
+        <a href="https://t.me/Algaitabot">Komawa Telegram yanzu</a>  
+    </body>  
+    </html>  
     """
+
 
 # ========= FEEDBACK =========
 def send_feedback_prompt(user_id, order_id):
