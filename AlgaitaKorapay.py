@@ -5993,6 +5993,234 @@ def start_handler(msg):
     bot.send_message(msg.chat.id, "Welcome!")
 
 
+import uuid
+import traceback
+from psycopg2.extras import RealDictCursor
+
+# ========= PAY ALL UNPAID (SAFE | GROUP-AWARE | CLEAN VERSION) =========
+@bot.callback_query_handler(func=lambda c: c.data == "payall:")
+def pay_all_unpaid(call):
+    uid = call.from_user.id
+    user_name = call.from_user.first_name or "Customer"
+    bot.answer_callback_query(call.id)
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # ==================================================
+        # 1️⃣ FETCH ALL UNPAID ORDER ITEMS
+        # ==================================================
+        cur.execute(
+            """
+            SELECT
+                o.id        AS old_order_id,
+                i.id        AS item_id,
+                i.title,
+                i.price,
+                i.file_id,
+                i.group_key
+            FROM orders o
+            JOIN order_items oi ON oi.order_id = o.id
+            JOIN items i ON i.id = oi.item_id
+            WHERE o.user_id=%s
+              AND o.paid=0
+            """,
+            (uid,)
+        )
+        rows = cur.fetchall()
+
+        if not rows:
+            bot.send_message(uid, "❌ No unpaid orders found.")
+            return
+
+        # ==================================================
+        # 2️⃣ REMOVE OWNED ITEMS
+        # ==================================================
+        all_item_ids = list({r["item_id"] for r in rows})
+
+        if all_item_ids:
+            cur.execute(
+                f"""
+                SELECT item_id
+                FROM user_movies
+                WHERE user_id=%s
+                  AND item_id IN ({",".join(["%s"] * len(all_item_ids))})
+                """,
+                (uid, *all_item_ids)
+            )
+            owned_ids = {r["item_id"] for r in cur.fetchall()}
+        else:
+            owned_ids = set()
+
+        if owned_ids:
+            kb_owned = InlineKeyboardMarkup()
+            kb_owned.add(
+                InlineKeyboardButton("📽 PAID MOVIES", callback_data="my_movies")
+            )
+
+            bot.send_message(
+                uid,
+                "You have already purchased some of these movies.\n"
+                "You can access them anytime from your paid movies section below.",
+                reply_markup=kb_owned
+            )
+
+        items = [
+            r for r in rows
+            if r["file_id"]
+            and int(r["price"] or 0) > 0
+            and r["item_id"] not in owned_ids
+        ]
+
+        if not items:
+            bot.send_message(uid, "❌ No payable items.")
+            return
+
+        item_ids = list({i["item_id"] for i in items})
+        old_order_ids = list({i["old_order_id"] for i in items})
+
+        # ==================================================
+        # 3️⃣ GROUP KEY LOGIC
+        # ==================================================
+        groups = {}
+
+        for i in items:
+            key = i["group_key"] or f"single_{i['item_id']}"
+            if key not in groups:
+                groups[key] = {
+                    "price": int(i["price"]),
+                    "items": []
+                }
+            groups[key]["items"].append(i)
+
+        total_amount = sum(g["price"] for g in groups.values())
+
+        if total_amount <= 0:
+            bot.send_message(uid, "❌ Invalid total amount.")
+            return
+
+        # ==================================================
+        # 4️⃣ CREATE COLLECTOR ORDER
+        # ==================================================
+        order_id = str(uuid.uuid4())
+
+        cur.execute(
+            """
+            INSERT INTO orders (id, user_id, amount, paid)
+            VALUES (%s, %s, %s, 0)
+            """,
+            (order_id, uid, total_amount)
+        )
+
+        for g in groups.values():
+            for i in g["items"]:
+                cur.execute(
+                    """
+                    INSERT INTO order_items
+                    (order_id, item_id, file_id, price)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (order_id, i["item_id"], i["file_id"], g["price"])
+                )
+
+        conn.commit()
+
+        # ==================================================
+        # 5️⃣ DELETE OLD ORDERS
+        # ==================================================
+        if old_order_ids:
+            cur.execute(
+                f"""
+                DELETE FROM order_items
+                WHERE order_id IN ({",".join(["%s"] * len(old_order_ids))})
+                """,
+                tuple(old_order_ids)
+            )
+
+            cur.execute(
+                f"""
+                DELETE FROM orders
+                WHERE id IN ({",".join(["%s"] * len(old_order_ids))})
+                """,
+                tuple(old_order_ids)
+            )
+
+            conn.commit()
+
+        # ==================================================
+        # 6️⃣ PAYSTACK
+        # ==================================================
+        pay_url = create_kora_payment(
+            uid,
+            order_id,
+            total_amount,
+            "Pay All Unpaid Orders"
+        )
+
+        if not pay_url:
+            return
+
+        # ==================================================
+        # 7️⃣ DISPLAY
+        # ==================================================
+        unique_titles = []
+        seen = set()
+
+        for key, g in groups.items():
+            first_item = g["items"][0]
+            title = first_item["title"]
+            if key not in seen:
+                unique_titles.append(title)
+                seen.add(key)
+
+        kb = InlineKeyboardMarkup()
+
+        # PAY NOW
+        kb.add(
+            InlineKeyboardButton("💳 PAY NOW", url=pay_url)
+        )
+
+        # NEW WALLET BUTTON (LIKE GROUPITEM)
+        kb.row(
+            InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
+        )
+
+        sent = bot.send_message(
+            uid,
+            f"""🧺 <b>PAY ALL UNPAID ORDERS</b>
+
+👤 <b>Your name is:</b> {user_name}
+
+🎬 <b>Films:</b>
+{", ".join(unique_titles)}
+
+📦 <b>Films:</b> {len(item_ids)}
+🗂 <b>G-orders:</b> {len(groups)}
+
+💵 <b>Total amount:</b> ₦{total_amount}
+
+🆔 <b>Order ID:</b>
+<code>{order_id}</code>
+""",
+            parse_mode="HTML",
+            reply_markup=kb
+        )
+
+        ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
+
+    except Exception:
+        pass
+
+    finally:
+        try:
+            cur.close()
+            conn.close()
+        except:
+            pass
+
+
 # ========= BUYD (ITEM ONLY | DEEP LINK → DM) =========
 from psycopg2.extras import RealDictCursor
 import uuid
@@ -6004,7 +6232,6 @@ def groupitem_deeplink_handler(msg):
     uid = msg.from_user.id
     user_name = msg.from_user.first_name or "Customer"
 
-    # ========= PARSE ITEM IDS + GROUP KEYS =========
     try:
         raw = msg.text.split("groupitem_", 1)[1]
         tokens = [x.strip() for x in re.split(r"[_,\s]+", raw) if x.strip()]
@@ -6014,7 +6241,6 @@ def groupitem_deeplink_handler(msg):
     if not tokens:
         return
 
-    # ✅ SAFE CONNECTION
     conn = get_conn()
     if not conn:
         return
@@ -6024,12 +6250,8 @@ def groupitem_deeplink_handler(msg):
 
     try:
         for token in tokens:
-
-            # ==== IF ID ====
             if token.isdigit():
                 item_ids.append(int(token))
-
-            # ==== IF GROUP KEY ====
             else:
                 cur.execute(
                     "SELECT id FROM items WHERE group_key=%s",
@@ -6048,7 +6270,6 @@ def groupitem_deeplink_handler(msg):
         conn.close()
         return
 
-    # ========= FETCH ITEMS =========
     try:
         placeholders = ",".join(["%s"] * len(item_ids))
         cur.execute(
@@ -6070,7 +6291,6 @@ def groupitem_deeplink_handler(msg):
         conn.close()
         return
 
-    # ========= FILE_ID REQUIRED =========
     items = [i for i in items if i.get("file_id")]
     if not items:
         cur.close()
@@ -6079,7 +6299,6 @@ def groupitem_deeplink_handler(msg):
 
     item_ids_clean = [i["id"] for i in items]
 
-    # ========= OWNERSHIP CHECK =========
     try:
         cur.execute(
             f"""
@@ -6110,7 +6329,6 @@ def groupitem_deeplink_handler(msg):
         conn.close()
         return
 
-    # ========= GROUP_KEY PRICING =========
     groups = {}
     for i in items:
         key = i["group_key"] or f"single_{i['id']}"
@@ -6125,7 +6343,6 @@ def groupitem_deeplink_handler(msg):
         conn.close()
         return
 
-    # ========= REUSE / CREATE ORDER =========
     try:
         cur.execute(
             f"""
@@ -6171,16 +6388,14 @@ def groupitem_deeplink_handler(msg):
             conn.close()
             return
 
-    # ========= PAYSTACK =========
     display_title = f"{item_count} item(s)"
-    pay_url = create_paystack_payment(uid, order_id, total, display_title)
+    pay_url = create_kora_payment(uid, order_id, total, display_title)
 
     if not pay_url:
         cur.close()
         conn.close()
         return
 
-    # ========= FIXED TITLE DISPLAY =========
     unique_titles = [
         i["title"]
         for _, i in {
@@ -6189,15 +6404,12 @@ def groupitem_deeplink_handler(msg):
         }.items()
     ]
 
-    # ========= FINAL =========
     kb = InlineKeyboardMarkup()
 
-    # PAY NOW (TOP ROW)
     kb.add(
         InlineKeyboardButton("💳 PAY NOW", url=pay_url)
     )
 
-    # SECOND ROW
     kb.row(
         InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"),
         InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
@@ -6221,11 +6433,11 @@ def groupitem_deeplink_handler(msg):
         reply_markup=kb
     )
 
-    # ===== NEW: STORE MESSAGE FOR AUTO DELETE AFTER PAYMENT =====
     ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
 
     cur.close()
     conn.close()
+
 
 
 # ========= BUYD (ITEM ONLY | DEEP LINK → DM) =========
@@ -6456,233 +6668,7 @@ Tura <b>/sendall</b> domin a sake tura items.""",
             conn.close()
 
 
-import uuid
-import traceback
-from psycopg2.extras import RealDictCursor
 
-# ========= PAY ALL UNPAID (SAFE | GROUP-AWARE | CLEAN VERSION) =========
-@bot.callback_query_handler(func=lambda c: c.data == "payall:")
-def pay_all_unpaid(call):
-    uid = call.from_user.id
-    user_name = call.from_user.first_name or "Customer"
-    bot.answer_callback_query(call.id)
-
-    try:
-        conn = get_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-
-        # ==================================================
-        # 1️⃣ FETCH ALL UNPAID ORDER ITEMS
-        # ==================================================
-        cur.execute(
-            """
-            SELECT
-                o.id        AS old_order_id,
-                i.id        AS item_id,
-                i.title,
-                i.price,
-                i.file_id,
-                i.group_key
-            FROM orders o
-            JOIN order_items oi ON oi.order_id = o.id
-            JOIN items i ON i.id = oi.item_id
-            WHERE o.user_id=%s
-              AND o.paid=0
-            """,
-            (uid,)
-        )
-        rows = cur.fetchall()
-
-        if not rows:
-            bot.send_message(uid, "❌ No unpaid orders found.")
-            return
-
-        # ==================================================
-        # 2️⃣ REMOVE OWNED ITEMS
-        # ==================================================
-        all_item_ids = list({r["item_id"] for r in rows})
-
-        if all_item_ids:
-            cur.execute(
-                f"""
-                SELECT item_id
-                FROM user_movies
-                WHERE user_id=%s
-                  AND item_id IN ({",".join(["%s"] * len(all_item_ids))})
-                """,
-                (uid, *all_item_ids)
-            )
-            owned_ids = {r["item_id"] for r in cur.fetchall()}
-        else:
-            owned_ids = set()
-
-        if owned_ids:
-            kb_owned = InlineKeyboardMarkup()
-            kb_owned.add(
-                InlineKeyboardButton("📽 PAID MOVIES", callback_data="my_movies")
-            )
-
-            bot.send_message(
-                uid,
-                "You have already purchased some of these movies.\n"
-                "You can access them anytime from your paid movies section below.",
-                reply_markup=kb_owned
-            )
-
-        items = [
-            r for r in rows
-            if r["file_id"]
-            and int(r["price"] or 0) > 0
-            and r["item_id"] not in owned_ids
-        ]
-
-        if not items:
-            bot.send_message(uid, "❌ No payable items.")
-            return
-
-        item_ids = list({i["item_id"] for i in items})
-        old_order_ids = list({i["old_order_id"] for i in items})
-
-        # ==================================================
-        # 3️⃣ GROUP KEY LOGIC
-        # ==================================================
-        groups = {}
-
-        for i in items:
-            key = i["group_key"] or f"single_{i['item_id']}"
-            if key not in groups:
-                groups[key] = {
-                    "price": int(i["price"]),
-                    "items": []
-                }
-            groups[key]["items"].append(i)
-
-        total_amount = sum(g["price"] for g in groups.values())
-
-        if total_amount <= 0:
-            bot.send_message(uid, "❌ Invalid total amount.")
-            return
-
-        # ==================================================
-        # 4️⃣ CREATE COLLECTOR ORDER
-        # ==================================================
-        order_id = str(uuid.uuid4())
-
-        cur.execute(
-            """
-            INSERT INTO orders (id, user_id, amount, paid)
-            VALUES (%s, %s, %s, 0)
-            """,
-            (order_id, uid, total_amount)
-        )
-
-        for g in groups.values():
-            for i in g["items"]:
-                cur.execute(
-                    """
-                    INSERT INTO order_items
-                    (order_id, item_id, file_id, price)
-                    VALUES (%s, %s, %s, %s)
-                    """,
-                    (order_id, i["item_id"], i["file_id"], g["price"])
-                )
-
-        conn.commit()
-
-        # ==================================================
-        # 5️⃣ DELETE OLD ORDERS
-        # ==================================================
-        if old_order_ids:
-            cur.execute(
-                f"""
-                DELETE FROM order_items
-                WHERE order_id IN ({",".join(["%s"] * len(old_order_ids))})
-                """,
-                tuple(old_order_ids)
-            )
-
-            cur.execute(
-                f"""
-                DELETE FROM orders
-                WHERE id IN ({",".join(["%s"] * len(old_order_ids))})
-                """,
-                tuple(old_order_ids)
-            )
-
-            conn.commit()
-
-        # ==================================================
-        # 6️⃣ PAYSTACK
-        # ==================================================
-        pay_url = create_paystack_payment(
-            uid,
-            order_id,
-            total_amount,
-            "Pay All Unpaid Orders"
-        )
-
-        if not pay_url:
-            return
-
-        # ==================================================
-        # 7️⃣ DISPLAY
-        # ==================================================
-        unique_titles = []
-        seen = set()
-
-        for key, g in groups.items():
-            first_item = g["items"][0]
-            title = first_item["title"]
-            if key not in seen:
-                unique_titles.append(title)
-                seen.add(key)
-
-        kb = InlineKeyboardMarkup()
-
-        # PAY NOW
-        kb.add(
-            InlineKeyboardButton("💳 PAY NOW", url=pay_url)
-        )
-
-        # NEW WALLET BUTTON (LIKE GROUPITEM)
-        kb.row(
-            InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"),
-            InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
-        )
-
-        sent = bot.send_message(
-            uid,
-            f"""🧺 <b>PAY ALL UNPAID ORDERS</b>
-
-👤 <b>Your name is:</b> {user_name}
-
-🎬 <b>Films:</b>
-{", ".join(unique_titles)}
-
-📦 <b>Films:</b> {len(item_ids)}
-🗂 <b>G-orders:</b> {len(groups)}
-
-💵 <b>Total amount:</b> ₦{total_amount}
-
-🆔 <b>Order ID:</b>
-<code>{order_id}</code>
-""",
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-
-        # ===== NEW: STORE MESSAGE FOR AUTO DELETE AFTER PAYMENT =====
-        ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
-
-    except Exception:
-        pass
-
-    finally:
-        try:
-            cur.close()
-            conn.close()
-        except:
-            pass
 
 import uuid
 from datetime import datetime
