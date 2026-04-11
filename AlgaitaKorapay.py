@@ -789,13 +789,16 @@ VIP_LINK = "https://t.me/+k4O-dsySLZBlOTM0"  # saka permanent group link naka
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is missing")
-# ========= PAYSTACK CONFIG =========
-PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET")
-PAYSTACK_PUBLIC = os.getenv("PAYSTACK_PUBLIC")
-PAYSTACK_REDIRECT_URL = os.getenv("PAYSTACK_REDIRECT_URL")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-PAYSTACK_BASE = "https://api.paystack.co"
+# ========= KORAPAY CONFIG =========
+KORA_SECRET = os.getenv("KORA_SECRET")
+KORA_PUBLIC = os.getenv("KORA_PUBLIC")
+KORA_ENCRYPTION = os.getenv("KORA_ENCRYPTION")
+
+KORA_REDIRECT_URL = os.getenv("KORA_REDIRECT_URL")
+KORA_WEBHOOK_URL = os.getenv("KORA_WEBHOOK_URL")
+
+KORA_BASE = "https://api.korapay.com/merchant/api/v1"
 
 
 VIP_GROUP_ID = -1003656360408
@@ -827,40 +830,55 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 # ========= FLASK =========
 app = Flask(__name__)
 
+
 import time
+import random
+import requests
 
-def create_paystack_payment(user_id, order_id, amount, title):
-    headers = {
-        "Authorization": f"Bearer {PAYSTACK_SECRET}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "reference": f"{order_id}_{int(time.time())}",  # ✅ FIX
-        "amount": int(amount) * 100,
-        "currency": "NGN",
-        "callback_url": PAYSTACK_REDIRECT_URL,
-        "email": f"user{user_id}@telegram.com",
-        "metadata": {
-            "order_id": str(order_id),
-            "user_id": user_id,
-            "title": title[:50]
+def create_kora_payment(user_id, order_id, amount, title):
+    try:
+        headers = {
+            "Authorization": f"Bearer {KORA_SECRET}",
+            "Content-Type": "application/json"
         }
-    }
 
-    r = requests.post(
-        f"{PAYSTACK_BASE}/transaction/initialize",
-        json=payload,
-        headers=headers,
-        timeout=30
-    )
+        # ✅ STRONG UNIQUE REFERENCE (NO STALE / NO DUPLICATE)
+        reference = f"{order_id}_{int(time.time())}_{random.randint(1000,9999)}"
 
-    data = r.json()
-    if not data.get("status"):
+        payload = {
+            "reference": reference,
+            "amount": int(amount),
+            "currency": "NGN",
+            "redirect_url": KORA_REDIRECT_URL,
+            "customer": {
+                "email": f"user{user_id}@telegram.com"
+            },
+            "metadata": {
+                "order_id": str(order_id),
+                "user_id": user_id,
+                "title": title[:50]
+            }
+        }
+
+        r = requests.post(
+            f"{KORA_BASE}/charges/initialize",
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
+
+        if r.status_code != 200:
+            return None
+
+        data = r.json()
+
+        if not data.get("status") or "data" not in data:
+            return None
+
+        return data["data"].get("checkout_url")
+
+    except:
         return None
-
-    return data["data"]["authorization_url"]
-
 
 
 # ========= HOME / KEEP ALIVE =========
