@@ -790,11 +790,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL is missing")
 
-# ========= KORAPAY CONFIG =========
-KORA_SECRET = os.getenv("KORA_SECRET")
-KORA_PUBLIC = os.getenv("KORA_PUBLIC")
-KORA_ENCRYPTION = os.getenv("KORA_ENCRYPTION")
 
+
+KORA_SECRET = os.getenv("KORA_SECRET")
+KORA_PUBLIC = os.getenv("KORA_PUBLIC")  # optional
 KORA_REDIRECT_URL = os.getenv("KORA_REDIRECT_URL")
 KORA_WEBHOOK_URL = os.getenv("KORA_WEBHOOK_URL")
 
