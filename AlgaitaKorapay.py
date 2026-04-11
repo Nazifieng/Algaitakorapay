@@ -850,7 +850,7 @@ def create_kora_payment(user_id, order_id, amount, title):
             "currency": "NGN",
             "redirect_url": KORA_REDIRECT_URL,
             "customer": {
-                "email": f"user{user_id}@telegram.com"
+                "email": f"user{user_id}@engrservice.com"
             },
             "metadata": {
                 "order_id": str(order_id),
