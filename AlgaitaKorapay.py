@@ -7064,7 +7064,6 @@ def handle_callback(c):
 
     
 
-
     from psycopg2.extras import RealDictCursor
     import uuid
 
@@ -7225,10 +7224,10 @@ def handle_callback(c):
             pass
 
         # ==================================================
-        # PAYSTACK
+        # KORAPAY
         # ==================================================
         try:
-            pay_url = create_paystack_payment(
+            pay_url = create_kora_payment(
                 uid,
                 order_id,
                 total,
@@ -7294,6 +7293,8 @@ def handle_callback(c):
 
         bot.answer_callback_query(c.id)
         return
+
+
  
 
 
