@@ -761,7 +761,7 @@ ORDER_MESSAGES = {}
 admin_states = {}
 active_links = {}
 # --- Admins configuration ---
-ADMINS = [6603268127]
+ADMINS = [8537505191]
 
 # ========= CONFIG =========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -779,11 +779,11 @@ WARNING_1_UNIT = "days"
 
 WARNING_2_VALUE = 32
 WARNING_2_UNIT = "days"
-ADMIN_ID = 6603268127
+ADMIN_ID = 8537505191
 OTP_ADMIN_ID = 6603268127
 
-BOT_USERNAME = "Algaitabot"
-CHANNEL = "@Algaitamoviestore"
+BOT_USERNAME = "Danchirinbot"
+CHANNEL = "@Danchirinps"
 
 COUNTDOWN_SECONDS = 70
 VIP_LINK = "https://t.me/+sRDID76KGO1lMTc8"  # saka permanent group link naka
@@ -805,8 +805,8 @@ KORA_BASE = "https://api.korapay.com/merchant/api/v1"
 VIP_GROUP_ID = -1003656360408
 
 # === PAYMENTS / STORAGE ===
-PAYMENT_NOTIFY_GROUP = -1003555015230
-STORAGE_CHANNEL = -1003520788779
+PAYMENT_NOTIFY_GROUP = -1003769342354
+STORAGE_CHANNEL = -1003794258511
 
 PAYMENT_NOTIFY_GROUP_WALLET = -1003803657269
 
