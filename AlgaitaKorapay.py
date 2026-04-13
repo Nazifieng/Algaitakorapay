@@ -832,9 +832,97 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 app = Flask(__name__)
 
 
+
+
 import time
 import random
 import requests
+
+# ========= BUYD (ITEM ONLY | DEEP LINK → DM) =========  
+from psycopg2.extras import RealDictCursor  
+import uuid  
+import time  
+import re  
+import requests  
+
+
+def debug(msg_text):
+    print(msg_text)
+    try:
+        bot.send_message(ADMIN_ID, f"🐞 DEBUG:\n{msg_text}")
+    except:
+        pass
+
+
+def create_kora_payment(user_id, order_id, amount, title):
+    try:
+        debug("KORA STEP 1: Starting payment init")
+
+        headers = {
+            "Authorization": f"Bearer {KORA_SECRET}",
+            "Content-Type": "application/json"
+        }
+
+        reference = f"{order_id}_{int(time.time())}"
+
+        payload = {
+            "reference": reference,
+            "amount": int(amount),
+            "currency": "NGN",
+            "redirect_url": KORA_REDIRECT_URL,
+            "customer": {
+                "email": f"user{user_id}@engrservice.com"
+            },
+            "metadata": {
+                "order_id": str(order_id),
+                "user_id": user_id,
+                "title": title[:50]
+            }
+        }
+
+        debug(f"KORA STEP 2: Payload -> {payload}")
+        debug(f"KORA STEP 3: Secret -> {KORA_SECRET[:10]}***")
+
+        r = requests.post(
+            f"{KORA_BASE}/charges/initialize",
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
+
+        debug(f"KORA STEP 4: Status Code -> {r.status_code}")
+        debug(f"KORA STEP 5: Raw Response -> {r.text}")
+
+        try:
+            data = r.json()
+        except Exception as e:
+            debug(f"KORA ERROR: JSON decode failed -> {e}")
+            return None
+
+        debug(f"KORA STEP 6: Parsed JSON -> {data}")
+
+        if r.status_code != 200:
+            debug("KORA ERROR: Status not 200 ❌")
+            return None
+
+        if not data.get("status"):
+            debug("KORA ERROR: status = False ❌")
+            return None
+
+        if "data" not in data:
+            debug("KORA ERROR: No data field ❌")
+            return None
+
+        pay_url = data["data"].get("checkout_url")
+
+        debug(f"KORA STEP 7: Checkout URL -> {pay_url}")
+
+        return pay_url
+
+    except Exception as e:
+        debug(f"KORA FATAL ERROR: {e}")
+        return None
+
 
 def create_kora_payment(user_id, order_id, amount, title):
     try:
@@ -1723,6 +1811,267 @@ def deliver_items(call):
 
     send_feedback_prompt(user_id, order_id)
 
+
+
+# ========= BUYD (ITEM ONLY | DEEP LINK → DM) =========  
+from psycopg2.extras import RealDictCursor  
+import uuid  
+import time  
+import re  
+
+
+
+def debug(msg_text):
+    print(msg_text)
+    try:
+        bot.send_message(ADMIN_ID, f"🐞 DEBUG:\n{msg_text}")
+    except:
+        pass
+
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("/start groupitem_"))  
+def groupitem_deeplink_handler(msg):  
+    uid = msg.from_user.id  
+    user_name = msg.from_user.first_name or "Customer"  
+
+    debug(f"STEP 1: Start received from {uid}")
+
+    try:  
+        raw = msg.text.split("groupitem_", 1)[1]  
+        tokens = [x.strip() for x in re.split(r"[_,\s]+", raw) if x.strip()]  
+        debug(f"STEP 2: Tokens parsed -> {tokens}")
+    except Exception as e:  
+        debug(f"ERROR parsing tokens: {e}")
+        return  
+
+    if not tokens:  
+        debug("STOP: No tokens found")
+        return  
+
+    conn = get_conn()  
+    if not conn:  
+        debug("STOP: DB connection failed")
+        return  
+    cur = conn.cursor(cursor_factory=RealDictCursor)  
+
+    item_ids = []  
+
+    try:  
+        for token in tokens:  
+            if token.isdigit():  
+                item_ids.append(int(token))  
+            else:  
+                cur.execute("SELECT id FROM items WHERE group_key=%s", (token,))  
+                rows = cur.fetchall()  
+                item_ids.extend([r["id"] for r in rows])  
+
+        debug(f"STEP 3: Item IDs -> {item_ids}")
+
+    except Exception as e:  
+        debug(f"ERROR fetching item_ids: {e}")
+        cur.close()  
+        conn.close()  
+        return  
+
+    if not item_ids:  
+        debug("STOP: No item_ids found")
+        cur.close()  
+        conn.close()  
+        return  
+
+    try:  
+        placeholders = ",".join(["%s"] * len(item_ids))  
+        cur.execute(f"""
+            SELECT id, title, price, file_id, group_key
+            FROM items
+            WHERE id IN ({placeholders})
+        """, tuple(item_ids))  
+
+        items = cur.fetchall()  
+        debug(f"STEP 4: Items fetched -> {items}")
+
+    except Exception as e:  
+        debug(f"ERROR fetching items: {e}")
+        cur.close()  
+        conn.close()  
+        return  
+
+    if not items:  
+        debug("STOP: No items returned")
+        cur.close()  
+        conn.close()  
+        return  
+
+    items = [i for i in items if i.get("file_id")]  
+    debug(f"STEP 5: Items with file_id -> {items}")
+
+    if not items:  
+        debug("STOP: No valid items with file_id")
+        cur.close()  
+        conn.close()  
+        return  
+
+    item_ids_clean = [i["id"] for i in items]  
+
+    try:  
+        cur.execute(f"""
+            SELECT 1 FROM user_movies
+            WHERE user_id=%s
+            AND item_id IN ({",".join(["%s"] * len(item_ids_clean))})
+            LIMIT 1
+        """, (uid, *item_ids_clean))  
+
+        owned = cur.fetchone()  
+        debug(f"STEP 6: Owned check -> {owned}")
+
+    except Exception as e:  
+        debug(f"ERROR checking ownership: {e}")
+        cur.close()  
+        conn.close()  
+        return  
+
+    if owned:  
+        debug("STOP: User already owns item")
+
+        kb = InlineKeyboardMarkup()  
+        kb.add(InlineKeyboardButton("📽 PAID MOVIES", callback_data="my_movies"))  
+
+        bot.send_message(
+            uid,
+            "✅ You have already purchased this movie.\n\n"
+            "Please check your *Paid Movies* to download it again.",
+            parse_mode="Markdown",
+            reply_markup=kb
+        )
+
+        cur.close()  
+        conn.close()  
+        return  
+
+    groups = {}  
+    for i in items:  
+        key = i["group_key"] or f"single_{i['id']}"  
+        if key not in groups:  
+            groups[key] = int(i["price"] or 0)  
+
+    total = sum(groups.values())  
+    item_count = len(items)  
+
+    debug(f"STEP 7: Total -> {total}, Count -> {item_count}")
+
+    if total <= 0:  
+        debug("STOP: Total <= 0")
+        cur.close()  
+        conn.close()  
+        return  
+
+    try:  
+        cur.execute(f"""
+            SELECT o.id
+            FROM orders o
+            JOIN order_items oi ON oi.order_id = o.id
+            WHERE o.user_id=%s
+            AND o.paid=0
+            AND oi.item_id IN ({",".join(["%s"] * len(item_ids_clean))})
+            GROUP BY o.id
+            HAVING COUNT(DISTINCT oi.item_id)=%s
+            LIMIT 1
+        """, (uid, *item_ids_clean, len(item_ids_clean)))  
+
+        row = cur.fetchone()  
+        debug(f"STEP 8: Existing order -> {row}")
+
+    except Exception as e:  
+        debug(f"ERROR checking existing order: {e}")
+        cur.close()  
+        conn.close()  
+        return  
+
+    if row:  
+        order_id = row["id"]  
+        debug(f"STEP 9: Using existing order -> {order_id}")
+    else:  
+        order_id = str(uuid.uuid4())  
+        debug(f"STEP 9: Creating new order -> {order_id}")
+
+        try:  
+            cur.execute(
+                "INSERT INTO orders (id, user_id, amount, paid) VALUES (%s,%s,%s,0)",
+                (order_id, uid, total)
+            )
+
+            for i in items:
+                cur.execute("""
+                    INSERT INTO order_items (order_id, item_id, file_id, price)
+                    VALUES (%s,%s,%s,%s)
+                """, (order_id, i["id"], i["file_id"], int(i["price"] or 0)))
+
+            conn.commit()
+            debug("STEP 10: Order committed")
+
+        except Exception as e:  
+            conn.rollback()
+            debug(f"ERROR inserting order: {e}")
+            cur.close()
+            conn.close()
+            return  
+
+    display_title = f"{item_count} item(s)"  
+
+    # 🔥 SUPER DEBUG BEFORE KORA
+    debug(f"KORA INPUT -> user_id={uid}, order_id={order_id}, amount={total}, title={display_title}")
+
+    try:
+        pay_url = create_kora_payment(uid, order_id, total, display_title)
+        debug(f"KORA OUTPUT -> pay_url={pay_url}")
+    except Exception as e:
+        debug(f"ERROR KORAPAY CALL: {e}")
+        cur.close()
+        conn.close()
+        return
+
+    if not pay_url:  
+        debug("STOP: pay_url is None ❌ (KORAPAY ISSUE)")
+        cur.close()  
+        conn.close()  
+        return  
+
+    unique_titles = [i["title"] for _, i in {
+        (i["group_key"] or f"single_{i['id']}"): i for i in items
+    }.items()]
+
+    kb = InlineKeyboardMarkup()  
+
+    kb.add(InlineKeyboardButton("💳 PAY NOW", url=pay_url))  
+
+    kb.row(
+        InlineKeyboardButton("💵Pay with wallet", callback_data=f"walletpay:{order_id}"),
+        InlineKeyboardButton("❌ Cancel", callback_data=f"cancel:{order_id}")
+    )
+
+    sent = bot.send_message(
+        uid,
+        f"""🧺 <b>Your order created 🎉</b>
+
+🎬 <b>You will buy:</b>
+{", ".join(unique_titles)}
+
+📦 Films: {item_count}
+💵 Total amount: ₦{total}
+
+👤 <b>Your name is:</b> {user_name}
+🆔 <b>Order ID:</b>
+<code>{order_id}</code>
+""",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+    ORDER_MESSAGES[order_id] = (sent.chat.id, sent.message_id)
+
+    debug("STEP 12: Message sent successfully ✅")
+
+    cur.close()  
+    conn.close()
 
 # ========= BUYD (ITEM ONLY | DEEP LINK → DM) =========  
 from psycopg2.extras import RealDictCursor  
