@@ -1730,7 +1730,7 @@ import uuid
 import time  
 import re  
 
-ADMIN_ID = 123456789  # ⚠️ SAKA NAKA
+
 
 def debug(msg_text):
     print(msg_text)
